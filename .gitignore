@@ -1,0 +1,15 @@
+# Secrets — never commit a real .env; .env.example is the template
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Local database volume
+pgdata/
+
+# macOS
+.DS_Store

@@ -1,0 +1,11 @@
+sku,ingredient_name,supplier_id,unit
+CHK-250,Chicken Breast 250g,SUP-NORD,unit
+CHK-250-B,Chicken Breast 250g Alternate,SUP-NORD,unit
+RICE-500,Jasmine Rice 500g,SUP-GRAIN,unit
+BROC-200,Broccoli 200g,SUP-PROD,unit
+CREAM-100,Cooking Cream 100ml,SUP-DAIRY,unit
+TOM-150,Tomatoes 150g,SUP-PROD,unit
+PASTA-300,Pasta 300g,SUP-GRAIN,unit
+BEEF-250,Ground Beef 250g,SUP-MEAT,unit
+TORT-6,Tortilla Pack 6,SUP-GRAIN,unit
+SALM-250,Salmon Fillet 250g,SUP-FISH,unit

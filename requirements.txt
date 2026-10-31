@@ -1,0 +1,13 @@
+# Only what the project actually imports.
+#
+# The test suite and scripts/run_scenario_offline.py need none of this — they
+# run on the standard library. These are for running the full LangGraph
+# workflow against PostgreSQL.
+
+langgraph                 # workflow control: nodes, edges, state, interrupts
+langchain-anthropic       # Claude client used by the two LLM nodes
+langchain-openai          # embedding model for RAG indexing and retrieval
+langchain-text-splitters  # chunking the policy documents before embedding
+psycopg[binary]           # PostgreSQL driver
+pydantic                  # structured output schemas for the LLM nodes
+python-dotenv             # reads .env

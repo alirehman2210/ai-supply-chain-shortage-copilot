@@ -1,0 +1,61 @@
+[
+  {
+    "id": "GQ-01",
+    "question": "How many CHK-250 units will Berlin be short on 2026-09-29 after confirmed inbound POs arriving by that date?",
+    "expected_answer": "1800",
+    "required_sources": [
+      "demand_forecast",
+      "recipe_ingredients",
+      "inventory",
+      "purchase_orders"
+    ]
+  },
+  {
+    "id": "GQ-02",
+    "question": "Which Berlin recipes consume CHK-250 on 2026-09-29?",
+    "expected_answer": [
+      "Chicken Teriyaki",
+      "Tuscan Chicken",
+      "Creamy Chicken Pasta"
+    ],
+    "required_sources": [
+      "demand_forecast",
+      "recipe_ingredients",
+      "recipes"
+    ]
+  },
+  {
+    "id": "GQ-03",
+    "question": "Can CHK-250-B be substituted into Creamy Chicken Pasta?",
+    "expected_answer": "No",
+    "required_sources": [
+      "substitution_policy.md"
+    ]
+  },
+  {
+    "id": "GQ-04",
+    "question": "What is the maximum additional quantity NordFarm may provide through the expedited process in a calendar week?",
+    "expected_answer": "1200 units",
+    "required_sources": [
+      "supplier_nordfarm_contract.md"
+    ]
+  },
+  {
+    "id": "GQ-05",
+    "question": "How much CHK-250 excess does Hamburg have before considering future POs, after reserving its own 2026-09-29 forecast?",
+    "expected_answer": "900 units",
+    "required_sources": [
+      "inventory",
+      "demand_forecast",
+      "recipe_ingredients"
+    ]
+  },
+  {
+    "id": "GQ-06",
+    "question": "Does an inter-FC transfer require human approval?",
+    "expected_answer": "Yes",
+    "required_sources": [
+      "warehouse_transfer_policy.md"
+    ]
+  }
+]
