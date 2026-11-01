@@ -1,29 +1,13 @@
 from pathlib import Path
-import re
-
 import psycopg
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from src.config import DATABASE_URL, OPENAI_EMBEDDING_MODEL
+from src.config import DATABASE_URL, OPENAI_EMBEDDING_MODEL, redact, require_api_key
+from src.document_metadata import parse_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "data" / "rag_docs"
-
-
-def parse_metadata(text: str) -> dict:
-    def grab(label: str):
-        m = re.search(rf"\*\*{re.escape(label)}:\*\*\s*([^\n]+)", text, re.IGNORECASE)
-        return m.group(1).strip() if m else None
-
-    document_type = grab("Document type")
-    supplier = grab("Supplier")
-    sku = grab("SKU") or grab("Primary SKU")
-    return {
-        "document_type": document_type or "general",
-        "supplier_id": supplier,
-        "sku": sku,
-    }
 
 
 def vector_literal(values: list[float]) -> str:
@@ -31,6 +15,9 @@ def vector_literal(values: list[float]) -> str:
 
 
 def main():
+    # Fail early with setup instructions rather than a provider error
+    # part-way through indexing.
+    require_api_key("OPENAI_API_KEY")
     embedder = OpenAIEmbeddings(model=OPENAI_EMBEDDING_MODEL)
     splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=120)
 
@@ -48,14 +35,16 @@ def main():
                     cur.execute(
                         """
                         INSERT INTO document_chunks
-                        (document_name, document_type, supplier_id, sku, chunk_index, content, embedding)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s::vector)
+                        (document_name, document_type, supplier_id, sku, skus,
+                         chunk_index, content, embedding)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
                         """,
                         (
                             path.name,
-                            meta["document_type"],
-                            meta["supplier_id"],
-                            meta["sku"],
+                            meta.document_type,
+                            meta.supplier_id,
+                            meta.primary_sku,
+                            meta.skus,
                             idx,
                             chunk,
                             vector_literal(vector),

@@ -1,17 +1,32 @@
-from collections import defaultdict
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
-from src.config import DATABASE_URL
+from src.config import DATABASE_URL, redact
+
+
+class DatabaseUnavailable(RuntimeError):
+    """The database could not be reached. Message is credential-safe."""
 
 
 def _query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return list(cur.fetchall())
+    """Run one read-only query.
+
+    Connection errors from the driver can quote the connection string, which
+    carries a password. They are caught and re-raised with that stripped out,
+    so a failed run cannot print a credential into a terminal or a log.
+    """
+    try:
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return list(cur.fetchall())
+    except psycopg.OperationalError as error:
+        raise DatabaseUnavailable(
+            f"Could not reach PostgreSQL. Is it running? Try: docker compose up -d\n"
+            f"Driver said: {redact(error)}"
+        ) from None  # from None: the original carries the unredacted conninfo
 
 
 def get_demand(target_date: str, fc_id: str) -> list[dict[str, Any]]:
@@ -88,6 +103,24 @@ def get_on_hand(fc_id: str, sku: str) -> float:
         (fc_id, sku),
     )
     return float(rows[0]["on_hand_qty"]) if rows else 0.0
+
+
+def get_all_purchase_orders(fc_id: str, sku: str) -> list[dict[str, Any]]:
+    """Every PO for one SKU at one site, whatever its status or date.
+
+    get_confirmed_purchase_orders() returns the ones that count toward
+    availability. This returns all of them, so the summary can say which ones
+    exist but do not help and why.
+    """
+    return _query(
+        """
+        SELECT po_id, supplier_id, fc_id, sku, quantity, expected_delivery, status
+        FROM purchase_orders
+        WHERE fc_id = %s AND sku = %s
+        ORDER BY expected_delivery
+        """,
+        (fc_id, sku),
+    )
 
 
 def get_other_fc_excess(sku: str, target_fc: str, target_date: str) -> list[dict[str, Any]]:

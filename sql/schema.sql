@@ -63,9 +63,18 @@ CREATE TABLE IF NOT EXISTS document_chunks (
   sku TEXT,
   chunk_index INTEGER NOT NULL,
   content TEXT NOT NULL,
-  embedding vector(1536)
+  embedding vector(1536),
+  -- Every ingredient the document covers. A supplier contract can cover more
+  -- than one, so a single column cannot hold the answer. Empty or NULL means
+  -- the document is general and applies to any ingredient.
+  skus TEXT[]
 );
+
+-- Idempotent, so re-running this file on a database created before the column
+-- existed adds it rather than failing.
+ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS skus TEXT[];
 
 CREATE INDEX IF NOT EXISTS idx_document_chunks_document_type ON document_chunks(document_type);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_supplier ON document_chunks(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_sku ON document_chunks(sku);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_skus ON document_chunks USING GIN(skus);

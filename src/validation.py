@@ -49,6 +49,12 @@ class ConstraintSnapshot:
     impacted_recipes: list[dict[str, Any]] = field(default_factory=list)
     #: expedited units already requested from the supplier this calendar week
     expedite_units_committed_this_week: float = 0.0
+    #: Hours between now and the date the stock is needed. An action that
+    #: cannot physically arrive in that window is not a mitigation, however
+    #: much stock exists. None means the window is unknown, in which case the
+    #: timing check is skipped and the option is flagged as unchecked rather
+    #: than quietly treated as feasible.
+    hours_until_required: float | None = None
 
 
 @dataclass
@@ -70,10 +76,16 @@ class ValidationReport:
     approved_units_total: float
     residual_shortage: float
     warnings: list[str] = field(default_factory=list)
+    timing_checked: bool = True
 
     @property
     def fully_covered(self) -> bool:
         return self.residual_shortage <= 0
+
+    @property
+    def feasible_options(self) -> list["ValidatedOption"]:
+        """Options that contribute units. What a planner can actually pick."""
+        return [o for o in self.options if o.approved_units > 0]
 
     @property
     def rejected_options(self) -> list[ValidatedOption]:
@@ -82,6 +94,29 @@ class ValidationReport:
     @property
     def capped_options(self) -> list[ValidatedOption]:
         return [o for o in self.options if o.verdict == CAPPED]
+
+
+def _check_timing(
+    snapshot: ConstraintSnapshot, required_hours: int, what: str, source: str
+) -> tuple[bool, str | None]:
+    """Can this action arrive before the stock is needed?
+
+    Returns (feasible, note). An unknown window is feasible-but-noted, because
+    guessing that there is enough time is exactly the kind of invented fact
+    this module exists to prevent.
+    """
+    available = snapshot.hours_until_required
+    if available is None:
+        return True, (
+            f"Timing not checked: the window until the required date is unknown. "
+            f"{what} needs {required_hours} hours ({source})."
+        )
+    if available < required_hours:
+        return False, (
+            f"Cannot arrive in time. {what} needs {required_hours} hours and only "
+            f"{available:.0f} remain before the stock is required ({source})."
+        )
+    return True, None
 
 
 def _approved_substitution_demand(snapshot: ConstraintSnapshot) -> float:
@@ -141,6 +176,25 @@ def _validate_transfer(
             source_fc=source_fc,
         )
 
+    in_time, timing_note = _check_timing(
+        snapshot,
+        business_rules.TRANSFER_LEAD_TIME_HOURS,
+        "An inter-site transfer",
+        "warehouse_transfer_policy.md, timing",
+    )
+    if not in_time:
+        return ValidatedOption(
+            action_type="transfer",
+            description=option.get("action", ""),
+            proposed_units=proposed,
+            approved_units=0.0,
+            verdict=REJECTED,
+            reasons=[timing_note or "Cannot arrive in time."],
+            source_fc=source_fc,
+        )
+    if timing_note:
+        reasons.append(timing_note)
+
     available = remaining_excess.get(source_fc, 0.0)
     approved = proposed
 
@@ -191,7 +245,7 @@ def _validate_transfer(
         description=option.get("action", ""),
         proposed_units=proposed,
         approved_units=approved,
-        verdict=CAPPED if reasons else OK,
+        verdict=CAPPED if approved < proposed else OK,
         reasons=reasons,
         source_fc=source_fc,
     )
@@ -205,6 +259,9 @@ def _validate_substitution(
     proposed = float(option.get("estimated_units", 0) or 0)
     reasons: list[str] = []
     rule = business_rules.substitution_rule_for(snapshot.target_sku)
+    # True when part of the option's scope was disallowed even though its
+    # quantity survived, e.g. one of the named recipes is not approved.
+    scope_narrowed = False
 
     if rule is None:
         return ValidatedOption(
@@ -236,6 +293,7 @@ def _validate_substitution(
                 ],
             )
         if unapproved:
+            scope_narrowed = True
             reasons.append(
                 f"{rule.substitute_sku} is not approved for {', '.join(unapproved)}; "
                 f"only the approved recipes are counted ({rule.source_document})."
@@ -290,7 +348,7 @@ def _validate_substitution(
         description=option.get("action", ""),
         proposed_units=proposed,
         approved_units=approved,
-        verdict=CAPPED if reasons else OK,
+        verdict=CAPPED if (approved < proposed or scope_narrowed) else OK,
         reasons=reasons,
     )
 
@@ -312,6 +370,24 @@ def _validate_expedite(
             verdict=REJECTED,
             reasons=["Proposed quantity is zero or negative."],
         )
+
+    in_time, timing_note = _check_timing(
+        snapshot,
+        business_rules.EXPEDITE_MIN_NOTICE_HOURS,
+        "An expedited supplier delivery",
+        "supplier_nordfarm_contract.md, section 5",
+    )
+    if not in_time:
+        return ValidatedOption(
+            action_type="expedite",
+            description=option.get("action", ""),
+            proposed_units=proposed,
+            approved_units=0.0,
+            verdict=REJECTED,
+            reasons=[timing_note or "Cannot arrive in time."],
+        )
+    if timing_note:
+        reasons.append(timing_note)
 
     remaining = expedite_budget["remaining"]
     if remaining <= 0:
@@ -419,6 +495,13 @@ def validate_options(
     residual = max(snapshot.shortage - approved_total, 0.0)
 
     warnings: list[str] = []
+    if snapshot.hours_until_required is None and any(
+        o.action_type in ("transfer", "expedite") for o in validated
+    ):
+        warnings.append(
+            "Delivery timing was not checked: the window until the required date "
+            "is unknown. Transfer and expedite lead times have not been verified."
+        )
     if approved_total > snapshot.shortage > 0:
         warnings.append(
             f"The approved actions total {approved_total:.0f} units against a shortage of "
@@ -448,4 +531,5 @@ def validate_options(
         approved_units_total=approved_total,
         residual_shortage=residual,
         warnings=warnings,
+        timing_checked=snapshot.hours_until_required is not None,
     )

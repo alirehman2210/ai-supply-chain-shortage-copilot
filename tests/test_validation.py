@@ -430,6 +430,115 @@ class UnknownAndMalformedActions(unittest.TestCase):
         self.assertEqual(report.approved_units_total, 0.0)
 
 
+class DeliveryTiming(unittest.TestCase):
+    """An action that cannot arrive in time is not a mitigation.
+
+    Stock that exists but lands after the production run is worth nothing, so
+    the window matters as much as the quantity.
+    """
+
+    def transfer(self, hours):
+        return validation.validate_options(
+            [
+                {
+                    "action_type": "transfer",
+                    "action": "Move stock from Hamburg",
+                    "estimated_units": 900,
+                    "source_fc": "HAM",
+                }
+            ],
+            berlin_snapshot(hours_until_required=hours),
+        ).options[0]
+
+    def expedite(self, hours):
+        return validation.validate_options(
+            [
+                {
+                    "action_type": "expedite",
+                    "action": "Expedite from the supplier",
+                    "estimated_units": 1000,
+                }
+            ],
+            berlin_snapshot(hours_until_required=hours),
+        ).options[0]
+
+    def test_transfer_with_a_week_of_notice_is_fine(self):
+        self.assertEqual(self.transfer(7 * 24).approved_units, 900.0)
+
+    def test_transfer_with_exactly_the_lead_time_is_allowed(self):
+        option = self.transfer(business_rules.TRANSFER_LEAD_TIME_HOURS)
+        self.assertEqual(option.approved_units, 900.0)
+
+    def test_transfer_with_too_little_notice_is_rejected(self):
+        option = self.transfer(business_rules.TRANSFER_LEAD_TIME_HOURS - 1)
+        self.assertEqual(option.verdict, REJECTED)
+        self.assertEqual(option.approved_units, 0.0)
+        self.assertIn("in time", " ".join(option.reasons))
+
+    def test_same_day_transfer_is_rejected(self):
+        self.assertEqual(self.transfer(0).verdict, REJECTED)
+
+    def test_expedite_with_48_hours_is_allowed(self):
+        option = self.expedite(business_rules.EXPEDITE_MIN_NOTICE_HOURS)
+        self.assertEqual(option.approved_units, 1000.0)
+
+    def test_expedite_with_less_than_48_hours_is_rejected(self):
+        option = self.expedite(business_rules.EXPEDITE_MIN_NOTICE_HOURS - 1)
+        self.assertEqual(option.verdict, REJECTED)
+        self.assertIn("48", " ".join(option.reasons))
+
+    def test_a_transfer_can_still_work_when_an_expedite_cannot(self):
+        """At 24 hours' notice, moving stock beats ordering more."""
+        report = validation.validate_options(
+            [
+                {
+                    "action_type": "transfer",
+                    "action": "Move stock from Hamburg",
+                    "estimated_units": 900,
+                    "source_fc": "HAM",
+                },
+                {
+                    "action_type": "expedite",
+                    "action": "Expedite from the supplier",
+                    "estimated_units": 1200,
+                },
+            ],
+            berlin_snapshot(hours_until_required=24),
+        )
+        by_type = {o.action_type: o for o in report.options}
+        self.assertEqual(by_type["transfer"].approved_units, 900.0)
+        self.assertEqual(by_type["expedite"].verdict, REJECTED)
+
+    def test_unknown_window_does_not_silently_pass_as_feasible(self):
+        """An unchecked rule is reported, not assumed satisfied."""
+        report = validation.validate_options(
+            [
+                {
+                    "action_type": "transfer",
+                    "action": "Move stock from Hamburg",
+                    "estimated_units": 900,
+                    "source_fc": "HAM",
+                }
+            ],
+            berlin_snapshot(hours_until_required=None),
+        )
+        self.assertFalse(report.timing_checked)
+        self.assertTrue(any("timing" in w.lower() for w in report.warnings))
+        self.assertIn("not checked", " ".join(report.options[0].reasons).lower())
+
+    def test_an_unchecked_window_does_not_make_a_clean_option_look_capped(self):
+        """A note about an unverified rule is not a reduction in quantity."""
+        option = self.transfer(None)
+        self.assertEqual(option.approved_units, option.proposed_units)
+        self.assertEqual(option.verdict, OK)
+
+    def test_a_known_window_marks_the_report_as_checked(self):
+        report = validation.validate_options(
+            [], berlin_snapshot(hours_until_required=48)
+        )
+        self.assertTrue(report.timing_checked)
+
+
 class ReportLevelBehaviour(unittest.TestCase):
     def test_every_option_requires_human_approval(self):
         options = [

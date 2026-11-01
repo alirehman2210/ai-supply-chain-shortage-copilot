@@ -1,116 +1,135 @@
 # Decisions
 
-The choices that shaped this prototype, the alternatives I weighed, and what
-changed once I tested it. The README shows what it does;
-[PRODUCT_SPEC.md](PRODUCT_SPEC.md) has the requirements. This is the reasoning.
+The choices that shaped this prototype, what I traded away for each, and what
+changed once I ran it for real.
+
+The [README](README.md) shows what it does. [PRODUCT_SPEC.md](PRODUCT_SPEC.md)
+has the requirements and the verified results. This is the reasoning.
 
 ---
 
-## 1. Use AI for the investigation, not for the decision
+## 1. AI investigates; fixed code decides
 
-**The decision.** Claude reads the planner's question, proposes mitigation
-options, and writes the summary. It does not calculate the shortage, judge
-whether a quantity is feasible, or approve anything.
+**The decision.** Claude reads the planner's question, suggests ways to close
+the shortage, and writes the covering paragraph. It does not calculate the
+shortage, decide whether a quantity is possible, decide whether a policy allows
+something, or approve anything.
 
-**Why AI is a good fit for the investigation.** The work before a decision is
-mostly assembly: pull from four systems, find the three relevant paragraphs
-across five documents, notice that one of the affected recipes is excluded from
-a substitution. It is the kind of task where the inputs are messy, the rules
-are written in prose, and the useful output is a shortlist with reasons. A
-language model is genuinely good at that, and it is the part that eats a
-planner's time.
+**Why AI suits the investigation.** The work before a decision is assembly:
+pull from four systems, find the three relevant paragraphs across five
+documents, notice that one affected recipe is excluded from a substitution. The
+inputs are messy, some of the rules are prose, and the useful output is a
+shortlist with reasons. That is what language models are good at, and it is the
+part that eats a planner's day.
 
-**Why it is a bad fit for the decision.** Committing stock, spending money on a
-surcharge, or changing what a customer receives are consequential and need to
-be the same answer every time. They also need to be checkable afterwards. A
-model that is right 95% of the time is useful for drafting and unacceptable for
-arithmetic that someone will act on.
+**Why it does not suit the decision.** Committing stock, paying a surcharge, or
+changing what a customer receives needs the same answer every time and needs to
+be checkable afterwards. A model that is right most of the time is useful for
+drafting and unacceptable for arithmetic someone will act on.
 
-**The alternative I rejected.** One `agent()` call with tools, letting the model
-decide which lookups to make and in what order. It would have been less code.
-It would also have meant that when an answer came out wrong, I could not tell
-whether the SQL was wrong, the retrieval missed, the arithmetic was wrong, or
-the model misread correct context. Splitting the workflow into explicit steps
-costs lines of code and buys the ability to debug by layer.
+**What I gave up.** A single agent call with tools would have been far less
+code. It would also mean that when an answer came out wrong I could not tell
+whether the database query, the search, the arithmetic, or the model's reading
+was at fault. Splitting the workflow into named steps costs lines and buys the
+ability to debug by layer. Running it for real settled that: when the final
+summary came out malformed, I knew within a minute it was the last step, not
+the investigation.
 
 ---
 
-## 2. Fixed rules validate quantities, and the model cannot overrule them
+## 2. The substitution bug, and why prompting could not fix it
 
-**The decision.** A deterministic validator sits between the model's proposals
-and the planner. It holds the inventory figures and the policy limits, and it
-decides the approved quantity for every option.
+**What happened.** An early version recommended substituting more units of the
+alternative ingredient than the site actually had. There was no step between
+Claude's suggestions and the planner. Claude produced options with quantities
+attached and they went straight through to review as written. Nothing compared
+a quantity to the stock, so nothing could catch it.
 
-**What prompted it.** A substitution recommendation for more units of the
-alternate ingredient than the site had. The full account is in the README; the
-part that matters here is *why prompting could not fix it*.
+**Why the recommendation was impossible.** A substitution sized to the full
+1,800-unit shortage breaks two rules at once. Berlin holds **600** units of the
+alternative, and the policy allows a site to use alternate stock only "up to
+the physical on-hand quantity". Separately, one of the three affected recipes —
+Creamy Chicken Pasta — is explicitly not approved for it, so even with
+unlimited stock the substitution could not cover that recipe's 2,200 units.
 
-The retrieved policy text was in the prompt. It said a site may use alternate
-inventory up to its physical on-hand quantity. The model had that text and
-still produced a larger number. I could have added "never exceed the on-hand
-quantity" to the instructions, and that would have reduced how often it
-happened. It would not have made it stop, and a safety property that holds most
-of the time is not a safety property. A planner cannot use a system where the
-answer is right often enough.
+**Why it is a good failure to design around.** The recommendation reads as
+correct. The alternative genuinely is approved for that ingredient, the
+retrieval genuinely found the right document, and a quantity matching the
+shortage looks like precision rather than a mistake.
 
-**Why this is the right split.** The validator's job is arithmetic and
-comparison — is 1,800 larger than 600, is RCP-PASTA in the approved set. That
-is exactly the kind of work where code is both cheaper and perfect, and where
-a model is expensive and merely very good.
+**Why a better prompt was not the answer.** The policy text was already in the
+prompt. It said the limit. Claude had it and still produced a larger number. I
+could add "never exceed the on-hand quantity" to the instructions and that
+would make it rarer. It would not make it stop, and a safety property that
+holds most of the time is not a safety property.
 
-**What it costs.** Every action type the copilot can recommend needs a
-validation rule written for it. Adding a fourth kind of mitigation means adding
-code, not just changing a prompt. I think that cost is the feature: it means
-nobody can add a new way to spend money without someone deciding what its
-limits are.
+**What I built instead.** `validate_mitigation_options`, a step every
+suggestion passes through. It holds the stock figures and the policy limits and
+it decides the quantity. Claude proposes; the rules decide. A test asserts the
+only route into the review step comes from the checker, so the original gap
+cannot quietly reopen.
+
+**What it does in controlled testing.** Given an 1,800-unit substitution
+suggestion, it approves **600** and gives both reasons: the unapproved recipe,
+and the stock on hand. The original 1,800 stays on screen next to the 600. This
+is covered by the mocked tests and is what `app.py --demo` shows.
+
+**What happened on the live runs — stated carefully.** Across four complete
+real-API runs, Claude proposed four options and **all four passed unchanged**.
+It sized the substitution to the 600 units that exist and excluded the
+unapproved recipe by itself. So on those runs the checker **confirmed** Claude's
+numbers. It did not correct them, and I am not going to claim it did. The live
+runs are evidence that the copilot produces a sound plan on this scenario. The
+evidence that the guardrail works is the forced-failure tests, which is exactly
+why they exist.
+
+**What it costs.** Every action type needs a rule written for it. Adding a
+fourth kind of mitigation means code, not a prompt change. That cost is the
+feature: nobody can add a new way to spend money without someone deciding its
+limits.
 
 **How it fails.** Closed. An action type with no rule is credited zero units
-against the shortage and left in the report for the planner to assess. The
-alternative — passing unrecognised actions through as valid — would make the
-validator useless exactly when something unexpected happened.
+and left visible for the planner. Passing unknown actions through as valid
+would make the checker useless exactly when something unexpected happened.
 
 ---
 
-## 3. Policy limits are configuration, not retrieved text
+## 3. Policy limits are settings, not retrieved text
 
 **The decision.** The 1,000-unit transfer cap, the 1,200-unit weekly expedite
-allowance, the 48-hour notice period, the 8% surcharge, and the list of
-recipes the substitute is approved for all live in `src/business_rules.py` as
-constants. The policy documents are still retrieved, and still shown to the
-planner.
+allowance, the 48-hour notice, the 8% surcharge, and the list of approved
+recipes live in `src/business_rules.py`. The documents are still retrieved and
+still shown to the planner.
 
 **Why not read the limits from the documents at runtime.** That was my first
-instinct, and it is the more impressive-sounding design: the system reads the
-policy and enforces what it reads, so updating a document updates behaviour. In
-practice it means a number that gates spending is produced by parsing prose
-with a language model. "Up to 1,200 additional units per calendar week" is easy
-to read correctly and also easy to read as 1,200 per day, or to apply to the
-wrong supplier, or to miss the word "additional". I would be moving the failure
-I had just fixed one layer down and making it harder to see.
+instinct and it is the more impressive-sounding design: the system reads the
+policy and enforces what it reads. In practice it means a number that gates
+spending is produced by parsing prose with a language model. "Up to 1,200
+additional units per calendar week" is easy to read correctly and also easy to
+read as 1,200 per day, or to apply to the wrong supplier, or to miss the word
+"additional". I would be moving the failure I had just fixed one layer down and
+making it harder to see.
 
-**Why retrieve the documents at all, then.** Because the planner needs the rule
-in its own words. "Reduced to 1,200 units" is an instruction. The contract
-clause explaining the surcharge, the notice period, and the written-confirmation
-requirement is context for a decision. The retrieval serves the human; the
-configuration serves the validator.
+**So why retrieve the documents at all.** Because the planner needs the rule in
+its own words. "Reduced to 1,200 units" is an instruction. The contract clause
+explaining the surcharge, the notice period and the written-confirmation
+requirement is context for a decision. Retrieval serves the human; the settings
+serve the checker.
 
-**The cost, and what I did about it.** The documents and the constants can drift
-apart, and if they do the copilot enforces a rule nobody agreed to.
-`tests/test_business_rules.py` checks that each enforced number still appears in
-the document it claims to come from, and that the substitution policy still
-excludes the recipe the code excludes. It is a text search, so it catches a
-changed number — the realistic failure — and would not catch a rewritten
-sentence that kept the same figure. Each constant also names its source
-document in a comment, so the two are updated together.
+**The cost, and what I did about it.** Documents and settings can drift apart,
+and then the copilot enforces a rule nobody agreed. 17 tests check that each
+enforced number still appears in the document it claims to come from, and that
+the substitution policy still excludes the recipe the code excludes. It is a
+text search, so it catches a changed number — the realistic failure — and would
+not catch a rewritten sentence that kept the same figure.
 
-**What production would need instead.** Policy limits in a table with an owner,
-an effective date, and a change history, read by the validator at runtime.
-Constants in a source file are right for a prototype and wrong for a business
-where a contract gets renegotiated.
+**What production would need instead.** Limits in a table with an owner, an
+effective date and a change history. Settings in a source file are right for a
+prototype and wrong for a business where contracts get renegotiated.
 
 ---
 
-## 4. Every action needs human approval, with no exceptions tier
+## 4. Every action needs approval, with no exceptions tier
 
 **The decision.** All four action types require human approval. The workflow
 stops at a real LangGraph interrupt and does not resume until a decision comes
@@ -118,230 +137,298 @@ back.
 
 **The alternative I considered.** Auto-approving small, cheap, reversible
 actions — a 50-unit transfer between two sites that both have plenty — and
-reserving the human for anything expensive. This is the usual shape for
-human-in-the-loop systems and it would make the copilot more useful.
+reserving the human for anything expensive. That is the usual shape for this
+kind of tool and it would make the copilot more useful.
 
-**Why I did not.** Two reasons, one principled and one practical.
-
-The principled one: every action here has an external counterparty. A transfer
+**Why I did not.** Every action here has an external counterparty. A transfer
 needs the sending site to agree. An expedite needs the supplier's written
-confirmation. A substitution changes what arrives in a customer's box. None of
-them is really the copilot's to take, however small, and "reversible" is doing
-a lot of work in a physical supply chain where the stock is already on a truck.
+confirmation. A substitution changes what arrives in someone's box. None of
+them is really the copilot's to take, however small, and "reversible" is doing a
+lot of work when the stock is already on a truck.
 
-The practical one: a threshold is a product decision that needs an owner. I
-would be inventing the number that separates "safe to automate" from "needs a
-person", with no operator to agree it and no incident history to calibrate it.
-A made-up threshold in a portfolio project would look like a feature and
-function as an unexamined risk.
+The practical reason matters too: a threshold is a product decision that needs
+an owner. I would be inventing the number separating "safe to automate" from
+"needs a person", with no operator to agree it and no incident history to
+calibrate against. A made-up threshold would look like a feature and function
+as an unexamined risk.
 
-**What I would need to change my mind.** An operator willing to own the
-threshold, and a few months of logged decisions showing which recommendations
-humans approve without changing. Then the threshold is derived rather than
-guessed.
-
----
-
-## 5. Show the rejected and capped options, not just the feasible ones
-
-**The decision.** An option that was cut from 1,800 units to 600 stays in the
-report, showing both numbers and the reason. Rejected options stay too.
-
-**The alternative.** Show the planner only what is feasible. It is a cleaner
-report and it is what a confident product would do.
-
-**Why not.** Two things are lost. The first is that the planner needs to know
-the shortage is not covered — if the substitution silently became 600 units,
-the 1,200-unit gap looks like it was always the plan rather than the
-consequence of a constraint. The second is calibration. A planner who sees that
-the copilot proposed three times the available stock learns something useful
-about how much to trust the next recommendation. Hiding the correction makes
-the system look more reliable than it is, which is the opposite of helpful for
-a tool whose output someone has to act on.
+**What would change my mind.** An operator willing to own the threshold, and a
+few months of logged decisions showing which recommendations humans approve
+without changing. Then the threshold is derived rather than guessed.
 
 ---
 
-## 6. Exclude purchase orders that arrive late, rather than counting and footnoting them
+## 5. Approve, reject, or approve part of it
 
-**The decision.** The availability projection counts only purchase orders that
-are confirmed *and* arrive on or before the date the stock is needed. A PO
-landing the next morning is excluded, and listed separately with the reason.
+**The decision.** The planner can approve everything, approve a subset, or
+reject the lot. Partial approval is not an afterthought — it is the realistic
+case.
 
-**Why this matters more than it sounds.** In the scenario there are two
-confirmed POs for the ingredient: 1,700 units arriving the day before, and
-1,400 arriving the day after. Counting both gives a 400-unit shortage. Counting
-the one that arrives in time gives 1,800. The two answers lead to completely
-different decisions — 400 units is covered by Hamburg's spare stock alone,
-while 1,800 cannot be covered without going to the supplier.
+**Why.** The four options total exactly the 1,800-unit shortage, which makes
+"approve everything" look like the obvious answer. It usually is not. A planner
+might take the Hamburg transfer and the substitution and leave the supplier
+request alone, because it costs 8% more and is not confirmed until NordFarm
+agrees in writing. The tool should not make that choice feel like a deviation.
 
-**The alternative.** Include all confirmed inbound and note the timing. That is
-how a lot of inventory reporting works, and it means the headline number is
-wrong in a way that is technically disclosed. The planner then has to do the
-date arithmetic themselves, which is exactly the error-prone assembly work the
-copilot is supposed to remove.
+**What it produces.** Approving the Hamburg transfer and the substitution
+covers 1,500 units, and the summary says plainly that 300 are still open and
+which unchosen options would cover them. Rejecting everything leaves the full
+1,800 standing and says so.
 
-I put the filter in the SQL query rather than in the Python, so the rows that
-reach the calculation are already the right rows and there is no later step
-that could forget to apply it.
+**One detail I had to decide.** What happens if a planner approves an option
+the checker refused. I allow it and credit zero units, and tell them at the
+time that it adds nothing. Blocking it would imply the checker outranks the
+human; crediting it would let approval conjure stock. Recording the decision
+honestly and showing the arithmetic is the only option that is true to both.
+
+**What I got wrong here.** My first version had three decision states and
+rendered anything that was not "pending" or "rejected" as an approval. A
+planner who quit without deciding got a summary reading "The planner approved:"
+followed by an empty list. Found by running the terminal app with deliberately
+unclear input. There are now explicit states for stopping without deciding and
+for approving nothing.
 
 ---
 
-## 7. A site's spare stock is net of its own demand
+## 6. The summary is built from checked data, not written by the model
+
+**The decision.** `src/summary.py` assembles the final summary from verified
+fields — the shortage from the arithmetic, the quantities from the checker, the
+decision from what the planner chose. Claude is then asked for a two-or-three
+sentence covering paragraph, and every quantity in that paragraph is checked
+against those same figures. If it states a number that is not one of them, the
+paragraph is dropped and the checked summary is shown on its own.
+
+**Why.** This was the last place a wrong number could reach a planner. Every
+other step was guarded, and then the final text — the part people actually
+read — was free prose generated from a context window. Instructing the model to
+use the approved figures is not enforcement.
+
+**Why keep a model-written paragraph at all.** Because a table of numbers is not
+a summary. The paragraph says which recipes are at risk and what the planner
+just chose, in a sentence someone can forward. Dropping the model entirely
+would cost that, and the fact check makes keeping it safe enough.
+
+**Where this is still imperfect, and I want to be clear about it.** The check
+compares numbers, not claims. A paragraph using only correct figures but
+describing a refused option as approved would pass. That is why the wording
+about what was approved comes from fixed code and not from the model. The fact
+check contains the risk; it does not remove it.
+
+**What it caught in testing.** A paragraph claiming "I have placed the order"
+is withheld — there is an explicit check for claims that an action was taken,
+because that is the most damaging thing the model could say in a tool whose
+whole point is that nothing has happened yet.
+
+---
+
+## 7. Exclude late deliveries rather than counting and footnoting them
+
+**The decision.** The availability figure counts only purchase orders that are
+confirmed *and* arrive on or before the date the stock is needed. A delivery
+landing the next morning is excluded and listed separately with the reason.
+
+**Why it matters more than it sounds.** There are two confirmed orders for this
+ingredient: 1,700 units arriving the day before, and 1,400 arriving the day
+after. Counting both gives a 400-unit shortage. Counting the one that arrives in
+time gives 1,800. Those two numbers lead to completely different decisions —
+400 units is covered by Hamburg's spare stock alone, while 1,800 cannot be
+closed without going to the supplier.
+
+**The alternative.** Include all confirmed inbound and note the timing. A lot of
+inventory reporting works that way, and it means the headline number is wrong
+in a way that is technically disclosed. The planner then has to do the date
+arithmetic themselves, which is the error-prone assembly work the copilot
+exists to remove.
+
+I put the filter in the database query rather than in the Python, so the rows
+reaching the calculation are already the right rows and no later step can
+forget to apply it.
+
+---
+
+## 8. Timing is a feasibility check, not a footnote
+
+**The decision.** An option is refused if it cannot physically arrive before the
+stock is needed. A transfer between sites takes 24 hours; an expedite needs 48
+hours notice.
+
+**Why I added it.** This was the gap I found when I reviewed my own checker
+against what the policies actually say. Every quantity was checked and nothing
+checked the clock. Stock that exists but lands after the production run is
+worth nothing, so a 1,200-unit expedite with 24 hours to go is not a mitigation
+however much the supplier has available.
+
+**What it produces.** At 24 hours' notice the Hamburg transfer is still allowed
+and the expedite is refused. That is the correct recommendation and the earlier
+version would have offered both.
+
+**The judgement call.** What to do when the window is unknown. I report it as
+unchecked and flag it, rather than assuming there is enough time. Assuming would
+be inventing a fact, which is the thing this whole layer exists to prevent. The
+option still appears with its quantity; the planner is told the timing was not
+verified.
+
+---
+
+## 9. A site's spare stock is net of its own demand
 
 **The decision.** Spare stock at another site is what it holds minus its own
-forecast requirement for the same date, floored at zero.
+forecast for the same date, floored at zero.
 
 **Why.** The naive version — look for sites with stock — produces
 recommendations that solve one site's shortage by creating another's. Hamburg
 holds 3,300 units, which looks like plenty against an 1,800-unit shortage, but
-it needs 2,400 for its own production that day. Its real spare stock is 900.
-
-This also matches what the transfer policy actually requires: a site may only
-send stock if it retains enough for its own confirmed forecast.
+it needs 2,400 for its own production. Its real spare stock is 900. This also
+matches what the transfer policy requires: a site may only send stock if it
+keeps enough for its own confirmed forecast.
 
 **The known flaw.** The calculation ignores the sending site's own incoming
-purchase orders, so the figure is a floor rather than an estimate — a site may
-be able to release more than it is credited with. I left it that way because
-being conservative about other people's stock is the safer direction, and
-because fixing it properly means modelling each site's full position rather
-than one SKU's. It is still wrong, and it is in the limitations.
+deliveries, so the figure is a floor rather than an estimate — a site may be
+able to release more than it is credited with. I left it because being
+conservative about other people's stock is the safer direction, and fixing it
+properly means modelling each site's full position rather than one ingredient's.
+It is still wrong, and it is in the limitations.
 
 ---
 
-## 8. Make the deterministic half runnable with nothing installed
+## 10. Make it runnable with nothing installed
 
-**The decision.** `src/scenario.py` reads the same synthetic CSVs and produces
-rows in the same shape the SQL tools return, so the arithmetic and the
-validator can run — and be tested — with no database, no API keys and no
-dependencies.
+**The decision.** `src/scenario.py` reads the same data files and produces rows
+in the same shape the database queries return, so the arithmetic and the checks
+run — and are tested — with no database, no keys and no dependencies.
 
-**What prompted it.** The full workflow needs Docker, PostgreSQL with pgvector,
-an Anthropic key and an OpenAI key. That is a reasonable stack and a bad front
-door. Anyone looking at this repository to judge whether I can build something
-would have to set all of that up before seeing anything work, and most people
-will not.
+**Why.** The full workflow needs Docker, PostgreSQL with pgvector, and two API
+keys. That is a reasonable stack and a terrible front door. Anyone opening this
+repository to judge whether I can build something would have to set all of that
+up before seeing anything work, and most people will not.
 
-**What it buys.** `python3 -m scripts.run_scenario_offline` prints the whole
-shortage investigation and the before-and-after of validation. 95 of the 105
-tests run on the standard library. The claims in the README are reproducible by
-anyone in about ten seconds.
+**What it buys.** `python3 app.py --demo` runs the whole investigation and the
+before-and-after of the checks. 224 of the 310 tests run on a bare Python. The
+claims in the README are reproducible in about ten seconds.
 
-**What it costs.** Two code paths load rows: the SQL queries and the CSV
-loader. They share the arithmetic and the validator, which is where a bug would
-actually hurt, but the loading logic is duplicated and the two could disagree.
-I decided a reproducible prototype with one duplicated layer beats a
-theoretically cleaner one that nobody can run. I would not make that tradeoff
-in production, where there would be one data source.
+**What it costs.** Two code paths load rows. They share the arithmetic and the
+checks — which is where a bug would actually hurt — but the loading logic is
+duplicated and the two could disagree. A reproducible prototype with one
+duplicated layer beats a cleaner one nobody can run. I would not make that
+trade in production, where there would be one data source.
 
 **The alternative I rejected.** Mocking the database in tests. That tests the
 arithmetic against my assumptions about what the database returns, which is a
-weaker thing to know, and it does not give anyone a way to actually run the
-project.
+weaker thing to know, and it gives nobody a way to actually run the project.
 
 ---
 
-## 9. Require the model to produce typed actions, not prose
+## 11. Make the model produce typed actions
 
-**The decision.** The model returns each option with an `action_type` from a
-fixed set, a quantity, and for a transfer the sending site — not just a
-sentence.
+**The decision.** Each option comes back with an action type from a fixed set, a
+quantity, and for a transfer the sending site — not just a sentence.
 
-**Why.** This is what makes validation possible at all. "Transfer some chicken
-from Hamburg" cannot be checked against anything. `action_type: transfer`,
-`source_fc: HAM`, `estimated_units: 900` can be checked against Hamburg's spare
-stock and the transfer cap. The structured schema is not there to make the
-output tidy; it is there so that fixed rules have something to compare.
+**Why.** This is what makes checking possible at all. "Transfer some chicken
+from Hamburg" cannot be compared to anything. `transfer`, `HAM`, `900` can be
+compared to Hamburg's spare stock and the transfer cap. The schema is not there
+to tidy the output; it is there so fixed rules have something to check.
 
-It also means a malformed proposal fails visibly. An option with no source site
-is rejected because it cannot be checked, rather than being interpreted
+It also means a malformed suggestion fails visibly. An option with no sending
+site is refused because it cannot be checked, rather than interpreted
 generously.
 
-**Related change.** The prompt tells the model its quantities will be checked
-and may be reduced. That is not a safety measure — the validator is the safety
-measure — but there is no reason to encourage confident overshoot.
+---
+
+## 12. What broke, how I found it, and what changed
+
+The useful part of building this was the failures. None of these were found by
+reading the code.
+
+**No checking step at all.** The original gap, covered in section 2. Found
+because a recommendation did not match the inventory.
+
+**A hard-coded supplier in the retrieval step.** The node fetching the supplier
+contract filtered on `SUP-NORD` as a literal. Correct for chicken; for any
+other ingredient it would confidently retrieve the wrong supplier's contract
+and then check against the wrong terms. It now looks up which supplier owns the
+ingredient. Found by reading the code — which told me the retrieval layer was
+the least tested part of the project, and it was.
+
+**The final summary leaked the model's internal reasoning.** The first real
+end-to-end run produced a summary beginning with a long base64 string. Current
+Claude models reply with a list of content blocks — a thinking block carrying a
+signature, then the text — and reading `.content` directly put the whole
+structure into the planner's summary. Found by running it for real; no offline
+or mocked test would have caught it, because the stub returned a plain string.
+Fixed by extracting the text blocks, with six regression tests.
+
+**Structured output using an unsupported method.** The library's default way of
+getting typed results back uses forced tool calling, which current Claude models
+reject; it warned it "will raise an OutputParserException if tool calls are not
+generated". Working but fragile. Switched to constrained output, which is the
+supported route and works with thinking enabled.
+
+**A sampling parameter that would now fail outright.** The model client was
+configured with `temperature=0`, which was the right way to ask for consistency
+when it was written. Current models reject it with an error. Removed; the typed
+calls get their consistency from their schemas.
+
+**The checker mislabelled its own verdicts.** After adding the timing check, an
+informational note — "timing not checked" — was enough to flip an option from
+"allowed" to "reduced", even though no quantity had changed. Found by a test
+failing for the right reason. A verdict now describes what happened to the
+quantity or the scope, not whether a note was attached.
+
+**The fact check failed on truthful sentences.** It read "250" out of the
+ingredient code `CHK-250` and flagged it as an invented quantity. Found by a
+test. The number pattern now ignores digits that are part of an identifier.
+
+**An unedited placeholder counted as a configured key.** The setup check tested
+whether the variable was non-empty, so a freshly copied `.env` passed and the
+failure surfaced later as a provider authentication error. Found while checking
+my own pre-flight output.
+
+**My secrets scanner flagged the real keys in `.env`.** Once real credentials
+were configured, the scanner failed — it was finding them where they are
+supposed to be. That was the scanner being wrong, not a leak. It now scans the
+surface a push would actually publish and separately proves `.env` is ignored. I
+confirmed it still catches a planted key in a file git would include.
+
+**An organisation-scoped API key.** The first key tried was created at the
+organisation level rather than inside a workspace, so the API rejected any
+request that did not name a workspace. That failed before inference, so nothing
+was billed. Worth recording because the verification script separates that from
+a bad key, which is what made the fix obvious — and the project now passes a
+workspace id through when one is configured.
 
 ---
 
-## 10. Things I got wrong and changed
+## 13. What production would require
 
-**No validation at all.** The original workflow went from
-`generate_mitigation_options` straight to `human_review`. This is the main
-story of the project and it has its own section in the README. The fix is
-`src/validation.py` plus a test asserting that the only edge into
-`human_review` comes from the validator, so the gap cannot reopen quietly.
+Roughly in dependency order. The first two are the difference between a
+demonstration and a tool.
 
-**A hard-coded supplier in the retrieval step.** The node that fetches the
-supplier contract filtered on `supplier_id="SUP-NORD"` as a literal. For the
-chicken scenario that is correct, and for any other ingredient it would
-confidently retrieve the wrong supplier's contract and then validate against
-the wrong terms. It now looks up which supplier owns the SKU first. Found by
-reading the code rather than by a test, which tells me the retrieval layer is
-the least tested part of the project — and it is, which is why an evaluation
-harness is the second thing on the list in the README.
+1. **Write-back with an audit record.** An approved option should produce a
+   draft transfer or purchase request, stored with who approved it, the facts at
+   the time, and the checker's reasoning. Without this the planner still does
+   the data entry, and there is no record of why a decision was made.
 
-**A model parameter that would now fail.** The model client was configured with
-`temperature=0`, which was the right way to ask for consistency when this was
-written. Current Claude models reject the sampling parameters outright, so that
-call would now return a 400. Removed; the two structured calls get their
-consistency from output schemas instead. The configured model was also a
-generation behind and is now `claude-opus-5-5`, set in `.env`.
+2. **Real evaluation of the search.** The arithmetic and the checks are tested
+   properly. Search quality rests on six questions over five short documents.
+   With five hundred documents the wrong supplier's contract comes back and the
+   checker applies the wrong limits with no sign of trouble.
 
-**Dependencies the project never used.** `requirements.txt` listed `fastapi`,
-`uvicorn`, `streamlit`, `pandas`, `ragas` and `pgvector`. None are imported
-anywhere — they were aspirations about where the project might go. One of them,
-`ragas`, does not even import successfully against the installed LangChain
-version. I trimmed the file to the seven packages the code actually uses, with
-a comment on each. A requirements file that lists things you are thinking about
-is a requirements file nobody can trust.
-
-**Documentation written for me rather than for a reader.** The repository had a
-`LEARNING_GUIDE.md` framing the whole thing as a tutorial exercise, a
-`NEXT_STEPS.md` with a phased learning plan, and a `BUILD_VALIDATION.txt`
-holding the output of one script. Useful while building, misleading as a
-description of what exists. The three documents now in the repository describe
-the system; the test suite replaces the validation text file, because a claim
-you can re-run beats a claim someone pasted.
-
----
-
-## 11. What production would require
-
-Roughly in dependency order. The first two are the ones that make the
-difference between a demonstration and a tool.
-
-1. **An approval interface.** The human-in-the-loop boundary is the core design
-   claim and the least usable part of the build. The workflow pauses correctly;
-   resuming it means writing Python. Until a planner can see validated options
-   on a screen and approve one, everything else is theatre.
-
-2. **Evaluation for the model-dependent steps.** The arithmetic and the
-   validator are tested. Retrieval and proposal quality are not measured at
-   all. With five documents that is survivable; with five hundred, the wrong
-   supplier's contract comes back and the validator dutifully applies the wrong
-   limits. Golden questions exist for this and only half of them are automated.
-
-3. **Write-back with an audit record.** An approved option should produce a
-   draft transfer or purchase-order request, stored with who approved it, the
-   facts at the time, and the validator's reasoning. Without this the planner
-   still does the data entry, and there is no record of why a decision was made.
-
-4. **Policy limits as data with owners and effective dates.** Constants in a
+3. **Policy limits as data with owners and effective dates.** Settings in a
    source file cannot express "this cap changed when we renegotiated in March".
 
-5. **Render the final summary from validated data.** The summary is currently
-   written by the model and instructed to use approved quantities rather than
-   proposed ones. Nothing enforces it, which makes it the last place a wrong
-   number can reach a planner. Fixed code should render the figures; the model
-   should write the prose around them.
+4. **Recommend a combination, not just options.** Each option is checked alone,
+   and over-ordering is flagged rather than resolved. The copilot cannot yet
+   propose the best mix that closes the gap without overshoot.
 
-6. **Real operational constraints.** Safety stock, production cutoff times,
-   warehouse capacity, partial deliveries, holidays. The current model of the
-   world is simple enough that some recommendations would be infeasible for
-   reasons the validator cannot see.
+5. **Real operational constraints.** Safety stock, production cut-off times,
+   warehouse capacity, partial deliveries, holidays. The current world model is
+   simple enough that some recommendations would be infeasible for reasons the
+   checker cannot see.
 
-7. **Reliability basics.** Retries and fallbacks on the model calls, tracing,
-   and inventory reservations so two concurrent investigations cannot both plan
-   to use the same 600 units.
+6. **Reliability basics.** Retries and fallbacks on the model calls, tracing,
+   and stock reservations so two concurrent investigations cannot both plan to
+   use the same 600 units.
 
-8. **Multi-SKU and multi-site runs**, where fixing one site's shortage updates
-   another's spare stock before the next recommendation is made.
+7. **Several ingredients and sites at once**, where solving one shortage updates
+   what is available for the next.

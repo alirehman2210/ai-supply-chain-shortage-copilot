@@ -19,6 +19,7 @@ class SupplyChainState(TypedDict, total=False):
     purchase_order_rows: list[dict[str, Any]]
     other_fc_rows: list[dict[str, Any]]
     substitute_on_hand: float
+    excluded_purchase_orders: list[dict[str, Any]]
 
     # Deterministic calculations
     required_by_sku: dict[str, float]
@@ -44,3 +45,6 @@ class SupplyChainState(TypedDict, total=False):
     # Decision and output
     human_decision: dict[str, Any]
     final_response: str
+    final_summary: dict[str, Any]
+    narrative_passed_fact_check: bool
+    fact_check_notes: list[str]

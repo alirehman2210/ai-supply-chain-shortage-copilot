@@ -8,6 +8,7 @@ and that nothing gets past the human-review stop.
 
 import importlib.util
 import unittest
+from pathlib import Path
 
 # Everything else in the suite runs on the standard library alone. These tests
 # need LangGraph, because the thing being checked is the compiled graph. They
@@ -96,21 +97,21 @@ class NodeResponsibilities(unittest.TestCase):
     def test_the_validation_module_does_not_import_an_llm_client(self):
         import src.validation as module
 
-        source = open(module.__file__, encoding="utf-8").read()
+        source = Path(module.__file__).read_text(encoding="utf-8")
         self.assertNotIn("ChatAnthropic", source)
         self.assertNotIn("langchain", source)
 
     def test_the_calculations_module_does_not_import_an_llm_client(self):
         import src.calculations as module
 
-        source = open(module.__file__, encoding="utf-8").read()
+        source = Path(module.__file__).read_text(encoding="utf-8")
         self.assertNotIn("ChatAnthropic", source)
         self.assertNotIn("langchain", source)
 
     def test_the_calculations_module_does_not_touch_the_database(self):
         import src.calculations as module
 
-        source = open(module.__file__, encoding="utf-8").read()
+        source = Path(module.__file__).read_text(encoding="utf-8")
         self.assertNotIn("psycopg", source)
 
 

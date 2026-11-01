@@ -1,15 +1,48 @@
-# Secrets — never commit a real .env; .env.example is the template
+# --- Secrets. Never commit these. ---------------------------------------
+# .env holds the real OPENAI_API_KEY and ANTHROPIC_API_KEY.
+# .env.example is the committed template and holds placeholders only.
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
+secrets.json
+.netrc
 
-# Python
+# --- Local database and container state ---------------------------------
+pgdata/
+postgres-data/
+*.sql.gz
+*.dump
+
+# --- Logs, backups, scratch ---------------------------------------------
+*.log
+logs/
+*.bak
+*.backup
+*.orig
+*.tmp
+backup/
+backups/
+
+# --- Python --------------------------------------------------------------
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+env/
 *.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
-# Local database volume
-pgdata/
-
-# macOS
+# --- Editors and OS -----------------------------------------------------
 .DS_Store
+.idea/
+.vscode/
+*.swp
