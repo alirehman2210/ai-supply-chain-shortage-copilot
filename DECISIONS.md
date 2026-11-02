@@ -335,10 +335,128 @@ generously.
 
 ---
 
-## 12. What broke, how I found it, and what changed
+## 12. LangGraph, rather than a script that calls the steps in order
 
-The useful part of building this was the failures. None of these were found by
-reading the code.
+**The problem.** The workflow is a sequence with two awkward properties: it
+branches, and it stops. If there is no shortage, the expensive half — three
+retrieval calls and the planning model call — should not run at all. And at the
+approval step it has to stop completely and continue later, with the facts it
+gathered still intact.
+
+**The alternative.** A plain Python script calling each step in order. For the
+happy path that is simpler, and honestly it would be enough right up until the
+pause.
+
+**Why I chose it.** Stopping mid-workflow and resuming from the same place is a
+checkpointing problem, not a prompting one. LangGraph's `interrupt` does it
+properly: execution halts, the gathered state is held, and passing a decision
+back in continues from exactly that point. Writing that by hand means inventing
+a state store and a resume protocol, which is the part of the project least
+worth hand-rolling.
+
+**The trade-off.** A framework dependency, and its own vocabulary for what is,
+on the happy path, a straight line. For a prototype of this size that is a real
+cost and I would not pretend otherwise.
+
+**How testing showed it worked.** 13 tests assert the graph's shape rather than
+its output — including that exactly one edge leads into the human-review step,
+and that the no-shortage branch reaches neither retrieval nor the planning call.
+The pause and resume were then exercised against the real API: approve, reject,
+and partial approval all resumed correctly and reported the facts from the
+original investigation.
+
+---
+
+## 13. Retrieval into the same database, and why retrieval at all
+
+**The problem.** The limits that decide whether a recommendation is possible are
+written in prose — a contract clause, a substitution policy. Something has to
+get the right paragraphs in front of the model.
+
+**The alternatives.** Three of them. Rely on the model's own knowledge, which
+fails immediately: these documents are synthetic and it has never seen them.
+Paste all five documents into every prompt, which works today and gets steadily
+worse as a policy library grows, in both cost and accuracy. Or run a dedicated
+vector service alongside Postgres.
+
+**Why I chose it.** The project already needs PostgreSQL for demand, stock and
+purchase orders. pgvector adds similarity search to that same database, so one
+connection string and one backup cover the facts and the documents together.
+For a prototype that is one moving part instead of two.
+
+**The trade-off, stated plainly.** Five short documents do not need vector
+search. Pasting them all into the prompt would answer the six golden questions
+just as well. There is also no vector index, so the search is an exact scan
+rather than an approximate one — precise and instant at 10 passages, and not
+what a large library would use. And there is no reranking step: the query
+returns the three nearest passages that pass the filters, whatever their
+scores.
+
+I built it anyway because it is the layer a real policy library would need, and
+because building it small is how I found out which part of it actually matters.
+That turned out not to be the similarity scoring. It was the metadata.
+
+**How testing showed it worked.** All six golden questions pass, three of them
+through retrieval, and each reports which document the evidence came from — so
+the check is that the right policy was found, not just that the answer looked
+right. On the real end-to-end runs, all three retrieval calls returned their
+correct document.
+
+---
+
+## 14. The metadata bug that taught me filtering matters more than similarity
+
+**What happened.** The supplier contract's header reads `**Relevant SKUs:**
+CHK-250, CHK-250-B`. The metadata parser looked for a label spelled exactly
+`SKU`, so it matched nothing and the contract was indexed as covering no
+ingredient at all.
+
+That would have been harmless if "covers nothing" meant "answers for nothing".
+It meant the opposite. The filter was `sku = %s OR sku IS NULL`, so a document
+with no ingredient recorded matched *every* ingredient. A question about salmon
+could be answered with the chicken supplier's terms — and the validator would
+then enforce NordFarm's weekly cap against salmon without anything looking
+wrong.
+
+**This was a controlled finding, not a real failure.** I reproduced it with a
+direct SQL query against the indexed data, and the end-to-end runs never
+produced a wrong contract, because the supplier filter was covering for it. The
+hole was only reachable when `get_supplier_for_sku()` returns nothing, which
+happens for an ingredient with no supplier row. Worth separating from the
+substitution bug in section 2, which was an actual bad recommendation.
+
+**The fix, and the second bug underneath it.** The parser now reads every SKU
+label variant into a list, and the column holds an array, because a contract
+covering two ingredients cannot be stored in one text field — storing only the
+first would have broken retrieval for the second.
+
+Fixing that exposed a further fail-open. An empty list still meant "applies to
+everything", which is correct for a transfer policy and dangerous for a
+contract: any supplier contract whose header was written in an unrecognised way
+would again answer for every ingredient. Document types that are
+ingredient-specific by nature now fail closed — with no ingredients listed they
+answer for nothing, which is noticeable, rather than for everything, which is
+not.
+
+**The trade-off.** Failing closed means a genuine contract with a malformed
+header silently answers nothing until someone notices. I prefer that to the
+alternative, because a missing document is visible in a way that a confidently
+wrong one is not.
+
+**How testing showed it worked.** 35 parser tests, including one asserting that
+every ingredient-scoped document in the project names the ingredients it
+covers. 24 retrieval tests run the real query against the real database with
+only the embedding call stubbed, so the production SQL is what is being tested.
+One of them inserts a supplier contract with no ingredients listed and checks it
+answers for nothing, then removes it.
+
+---
+
+## 15. What broke, how I found it, and what changed
+
+The useful part of building this was the failures. Almost all of them surfaced
+by running the thing, or by a test failing for the right reason — only one came
+from reading the code.
 
 **No checking step at all.** The original gap, covered in section 2. Found
 because a recommendation did not match the inventory.
@@ -348,7 +466,8 @@ contract filtered on `SUP-NORD` as a literal. Correct for chicken; for any
 other ingredient it would confidently retrieve the wrong supplier's contract
 and then check against the wrong terms. It now looks up which supplier owns the
 ingredient. Found by reading the code — which told me the retrieval layer was
-the least tested part of the project, and it was.
+the least tested part of the project, and it was. The metadata bug in section
+14 was the other half of that same lesson, found later and separately.
 
 **The final summary leaked the model's internal reasoning.** The first real
 end-to-end run produced a summary beginning with a long base64 string. Current
@@ -399,7 +518,7 @@ workspace id through when one is configured.
 
 ---
 
-## 13. What production would require
+## 16. What production would require
 
 Roughly in dependency order. The first two are the difference between a
 demonstration and a tool.

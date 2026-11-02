@@ -95,6 +95,78 @@ anything. Those live in `src/calculations.py` and `src/validation.py`, and
 neither file imports a model client. There are tests that fail if that ever
 changes.
 
+## Why I chose this architecture
+
+**Claude**, because the hard part of this job is reading. The question arrives
+as a sentence and the rules arrive as prose in a contract, and turning those
+into "which ingredient, which site, which date, and what could we do" is what a
+language model is good at. It does three things: understands the question,
+proposes options, writes the closing paragraph. Every number it produces is
+checked before anyone sees it.
+
+**LangGraph**, because this is a sequence with a branch and a stop in it. If
+there is no shortage, the expensive half — retrieval and the planning call — is
+skipped entirely. And the workflow has to pause at the approval step and resume
+from exactly where it left off, which is a checkpointing problem, not a
+prompting one. A plain script could run the steps in order; it could not stop
+in the middle and come back.
+
+**RAG**, because the rules that decide feasibility live in prose. Retrieving
+the relevant passages at question time beats the two alternatives: relying on
+the model's memory of documents it was never shown, or pasting every document
+into every prompt, which gets more expensive and less accurate as the library
+grows.
+
+**PostgreSQL with pgvector**, because the project already needs a database for
+demand, stock and purchase orders. pgvector adds similarity search to that same
+database, so one connection and one backup cover both the facts and the
+documents — a fit for this project's size, not a claim that it beats a
+dedicated vector service at scale.
+
+**Deterministic Python for validation**, because a recommendation has to obey
+exact limits — stock on hand, which recipes a substitute is approved for, a
+supplier's weekly cap, delivery lead times. Prompting makes a violation rarer.
+Only code makes it impossible.
+
+**The honest trade-off:** five short documents do not need vector search. A
+keyword match, or passing all five to Claude, would answer these six questions.
+The retrieval layer is here because it is what a real policy library would
+need, and building it small is how I found out that metadata filtering matters
+more than similarity does.
+
+### How retrieval actually works
+
+1. Each document is split into passages — 700 characters with 120 characters of
+   overlap, so a rule that straddles a boundary still appears whole in one of
+   them. The five synthetic documents produce 10 passages.
+2. OpenAI's `text-embedding-3-small` converts each passage into a list of 1,536
+   numbers that represents its meaning.
+3. At question time, the search text is converted into a list of numbers by the
+   same model.
+4. **Metadata filters run first**, in the SQL `WHERE` clause, before anything is
+   compared. A contract search is restricted to that ingredient's own supplier,
+   and to documents that list that ingredient among the ones they cover.
+5. pgvector then ranks whatever survived the filter by cosine distance, and the
+   three closest passages are returned.
+6. Those passages go to Claude as the evidence for its suggestions — and
+   separately, the limits those passages describe are enforced from
+   configuration, not parsed out of the text.
+
+**About the similarity number.** Each result carries a `similarity` score,
+calculated as `1 - cosine_distance`. It measures how closely the direction of
+two lists of numbers lines up: higher means the passage is worded more like the
+question. It is not a probability, not a confidence level, and not a claim that
+the passage is correct or applicable. A well-worded but irrelevant passage can
+score higher than a terse relevant one, which is why the metadata filters do
+the work that matters.
+
+**What this is not.** There is no reranking step, no keyword or hybrid search,
+and no relevance threshold — the query returns the three nearest passages that
+pass the filters, whatever their scores. There is also no vector index, so the
+search is an exact scan rather than an approximate one. At 10 passages that is
+instant and precise; a real library would need an index and probably a reranker,
+and neither is pretended here.
+
 ## The example scenario
 
 Chicken breast (`CHK-250`) at the Berlin site, for 2026-09-29. These figures
