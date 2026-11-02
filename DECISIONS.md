@@ -347,12 +347,12 @@ gathered still intact.
 happy path that is simpler, and honestly it would be enough right up until the
 pause.
 
-**Why I chose it.** Stopping mid-workflow and resuming from the same place is a
-checkpointing problem, not a prompting one. LangGraph's `interrupt` does it
-properly: execution halts, the gathered state is held, and passing a decision
-back in continues from exactly that point. Writing that by hand means inventing
-a state store and a resume protocol, which is the part of the project least
-worth hand-rolling.
+**Why I chose it.** Stopping halfway and picking up again later is about
+saving state, not about prompting. LangGraph's `interrupt` does it properly:
+the workflow stops, everything it has gathered is held, and passing a decision
+back in continues from that point. Building that by hand means writing a place
+to store the state and a way to resume from it, which is the last part of this
+project worth writing myself.
 
 **The trade-off.** A framework dependency, and its own vocabulary for what is,
 on the happy path, a straight line. For a prototype of this size that is a real
@@ -430,18 +430,17 @@ label variant into a list, and the column holds an array, because a contract
 covering two ingredients cannot be stored in one text field — storing only the
 first would have broken retrieval for the second.
 
-Fixing that exposed a further fail-open. An empty list still meant "applies to
-everything", which is correct for a transfer policy and dangerous for a
-contract: any supplier contract whose header was written in an unrecognised way
-would again answer for every ingredient. Document types that are
-ingredient-specific by nature now fail closed — with no ingredients listed they
-answer for nothing, which is noticeable, rather than for everything, which is
-not.
+Fixing that exposed a second version of the same problem. An empty list still
+meant "applies to everything", which is right for a transfer policy and wrong
+for a contract: any supplier contract with a header the parser did not
+recognise would again answer for every ingredient. Document types that are
+always about a specific ingredient — contracts, substitution policies — now
+work the other way round. With no ingredients listed they answer for nothing,
+which someone will notice, instead of everything, which nobody would.
 
-**The trade-off.** Failing closed means a genuine contract with a malformed
-header silently answers nothing until someone notices. I prefer that to the
-alternative, because a missing document is visible in a way that a confidently
-wrong one is not.
+**The trade-off.** A real contract with a badly written header now answers
+nothing until someone notices. I prefer that to the alternative: a missing
+answer is easier to spot than a confident wrong one.
 
 **How testing showed it worked.** 35 parser tests, including one asserting that
 every ingredient-scoped document in the project names the ingredients it

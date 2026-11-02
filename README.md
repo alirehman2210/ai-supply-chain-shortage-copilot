@@ -97,75 +97,120 @@ changes.
 
 ## Why I chose this architecture
 
-**Claude**, because the hard part of this job is reading. The question arrives
-as a sentence and the rules arrive as prose in a contract, and turning those
-into "which ingredient, which site, which date, and what could we do" is what a
-language model is good at. It does three things: understands the question,
-proposes options, writes the closing paragraph. Every number it produces is
-checked before anyone sees it.
+### Why Claude?
 
-**LangGraph**, because this is a sequence with a branch and a stop in it. If
-there is no shortage, the expensive half — retrieval and the planning call — is
-skipped entirely. And the workflow has to pause at the approval step and resume
-from exactly where it left off, which is a checkpointing problem, not a
-prompting one. A plain script could run the steps in order; it could not stop
-in the middle and come back.
+A planner asks the question in their own words, and the rules they need are
+written as sentences in a contract rather than stored as numbers. Reading both
+is what a language model is good at.
 
-**RAG**, because the rules that decide feasibility live in prose. Retrieving
-the relevant passages at question time beats the two alternatives: relying on
-the model's memory of documents it was never shown, or pasting every document
-into every prompt, which gets more expensive and less accurate as the library
-grows.
+Claude does three jobs here. It works out which ingredient, site and date the
+question is about. It suggests ways to close the gap. And it writes the short
+summary at the end.
 
-**PostgreSQL with pgvector**, because the project already needs a database for
-demand, stock and purchase orders. pgvector adds similarity search to that same
-database, so one connection and one backup cover both the facts and the
-documents — a fit for this project's size, not a claim that it beats a
-dedicated vector service at scale.
+It does not calculate the shortage and it does not decide whether a suggestion
+is allowed. Those are done in Python.
 
-**Deterministic Python for validation**, because a recommendation has to obey
-exact limits — stock on hand, which recipes a substitute is approved for, a
-supplier's weekly cap, delivery lead times. Prompting makes a violation rarer.
-Only code makes it impossible.
+### Why LangGraph?
 
-**The honest trade-off:** five short documents do not need vector search. A
-keyword match, or passing all five to Claude, would answer these six questions.
-The retrieval layer is here because it is what a real policy library would
-need, and building it small is how I found out that metadata filtering matters
-more than similarity does.
+The copilot runs several steps in order, skips some of them depending on what
+it finds, and has to stop in the middle and wait for a person.
+
+LangGraph manages that. When there is no shortage it skips the expensive part —
+the document searches and the suggestion step — and goes straight to the
+answer. At the approval step it stops and holds everything it has gathered, so
+when the planner approves or rejects, the workflow continues from the same
+place with the same facts.
+
+A plain script could run the steps in order. It could not stop halfway and come
+back later.
+
+### Why RAG?
+
+The copilot needs information from supplier contracts and company policies to
+recommend solutions. I used RAG to search those documents and retrieve the
+relevant sections.
+
+For example, if a planner asks about an urgent chicken delivery, the system can
+find the supplier's rules about delivery notice and weekly quantity limits.
+
+This gives Claude the information it needs to make recommendations. Python then
+checks those recommendations against the applicable restrictions.
+
+RAG also gives the system a way to search a larger collection of documents
+without sending every document to Claude for every question.
+
+### Why PostgreSQL and pgvector?
+
+The copilot needs two different kinds of lookup. It needs exact facts — how
+many units are in Berlin today — and it needs to search documents by meaning.
+
+PostgreSQL handles the facts: demand, recipes, stock and purchase orders.
+pgvector is a PostgreSQL extension that adds document search to the same
+database, so both kinds of lookup use one connection and one backup instead of
+running a separate search service alongside it.
+
+For this project's size that is simpler. It is not a claim that pgvector is
+better than a dedicated vector database at scale.
+
+### Why deterministic Python validation?
+
+A recommendation has to follow exact limits: the stock actually on hand, which
+recipes a substitute is approved for, the supplier's weekly cap, how long a
+transfer takes to arrive.
+
+Python checks each suggestion against those limits and then approves the
+quantity, reduces it, or rejects it — and says which rule applied and which
+document it came from.
+
+For example, asked to substitute 1,800 units when the site holds 600, the check
+reduces it to 600 and explains why. Better wording in the prompt makes that
+mistake less frequent. The check stops it happening.
+
+### The trade-off
+
+Five short documents do not need document search. A keyword match, or simply
+sending all five to Claude, would answer the six test questions just as well.
+
+I built the search layer because it is what a real policy library would need,
+and because building it small is how I found out which part of it matters. That
+turned out to be the metadata filtering rather than the similarity scoring.
 
 ### How retrieval actually works
 
-1. Each document is split into passages — 700 characters with 120 characters of
-   overlap, so a rule that straddles a boundary still appears whole in one of
-   them. The five synthetic documents produce 10 passages.
-2. OpenAI's `text-embedding-3-small` converts each passage into a list of 1,536
-   numbers that represents its meaning.
-3. At question time, the search text is converted into a list of numbers by the
-   same model.
-4. **Metadata filters run first**, in the SQL `WHERE` clause, before anything is
-   compared. A contract search is restricted to that ingredient's own supplier,
-   and to documents that list that ingredient among the ones they cover.
-5. pgvector then ranks whatever survived the filter by cosine distance, and the
+1. **Each document is split into passages** — 700 characters each, with 120
+   characters of overlap so a rule that falls across a split still appears
+   complete in one of them. The five documents produce 10 passages.
+2. **Each passage is converted into numbers.** OpenAI's
+   `text-embedding-3-small` turns a passage into a list of 1,536 numbers, an
+   embedding, which represents what the text means.
+3. **The search question is converted the same way**, using the same model, so
+   the two can be compared.
+4. **Metadata filters are applied first.** This happens in the SQL `WHERE`
+   clause, before any comparison. A contract search only looks at that
+   ingredient's own supplier, and only at documents that list that ingredient.
+5. **pgvector then ranks what is left** by how similar the numbers are, and the
    three closest passages are returned.
-6. Those passages go to Claude as the evidence for its suggestions — and
-   separately, the limits those passages describe are enforced from
-   configuration, not parsed out of the text.
+6. **Those passages go to Claude** as the information behind its suggestions.
+   The limits themselves are applied from settings in the code, not read out of
+   the retrieved text.
 
-**About the similarity number.** Each result carries a `similarity` score,
-calculated as `1 - cosine_distance`. It measures how closely the direction of
-two lists of numbers lines up: higher means the passage is worded more like the
-question. It is not a probability, not a confidence level, and not a claim that
-the passage is correct or applicable. A well-worded but irrelevant passage can
-score higher than a terse relevant one, which is why the metadata filters do
-the work that matters.
+**What the similarity number means.** Each result comes back with a
+`similarity` score, calculated as `1 - cosine_distance`. It is a measure of how
+closely two lists of numbers point in the same direction — in practice, how
+similar the passage and the question are in wording and meaning. A higher score
+means a closer match.
 
-**What this is not.** There is no reranking step, no keyword or hybrid search,
-and no relevance threshold — the query returns the three nearest passages that
-pass the filters, whatever their scores. There is also no vector index, so the
-search is an exact scan rather than an approximate one. At 10 passages that is
-instant and precise; a real library would need an index and probably a reranker,
-and neither is pretended here.
+It is not a probability, and it does not mean the passage is correct or the
+right one to use. A nicely worded but irrelevant passage can score higher than
+a short, relevant one. That is why the metadata filters matter more than the
+score does.
+
+**What this does not do.** There is no reranking step, no keyword search, and
+no minimum score — the search returns the three nearest passages that pass the
+filters, whatever they score. There is also no vector index, so every search
+compares against all passages. With 10 passages that is instant and exact. A
+real document library would need an index, and probably a reranking step too,
+and neither is implemented here.
 
 ## The example scenario
 
@@ -269,12 +314,12 @@ trust.
 ### Where the limits come from
 
 The policy documents are retrieved and shown to the planner so they can read
-each rule in its own words. But the numbers that decide feasibility — the
+each rule in its own words. But the numbers used to check a suggestion — the
 1,000-unit transfer cap, the 1,200-unit weekly allowance, which recipes the
 alternative is approved for — are written as plain settings in
 `src/business_rules.py`, each one naming the document it came from.
 
-A limit read out of prose by a language model is a limit that can be misread.
+A limit the model reads out of a document is a limit it can misread.
 The trade-off is that the settings and the documents can drift apart, so there
 are tests that check each number still appears in the document it claims to
 come from.
